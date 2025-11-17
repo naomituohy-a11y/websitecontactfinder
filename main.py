@@ -105,14 +105,22 @@ def get_links_from_html(base_url: str, html: str):
 def extract_contacts_from_page(base_url: str, url: str, html: str):
     """
     Extract emails/phones and some surrounding context from a single page.
+
+    For each text block, we:
+    - grab all emails and phones
+    - create a row for each email, attaching the phones seen in that same block
+    - if there are phones but no emails, create phone-only rows
+
+    No filtering by job title – Title_guess is just a hint.
     """
     blocks = get_visible_text_blocks(html)
     contacts = []
 
     for block in blocks:
-        emails = extract_emails(block)
-        phones = extract_phone_numbers(block)
+        emails = list(set(extract_emails(block)))
+        phones = list(set(extract_phone_numbers(block)))
 
+        # Nothing interesting in this block
         if not emails and not phones:
             continue
 
@@ -120,7 +128,7 @@ def extract_contacts_from_page(base_url: str, url: str, html: str):
         name_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b", block)
         name_guess = name_match.group(1).strip() if name_match else ""
 
-        # some role words we care about
+        # some role words we care about (just for Title_guess, NOT filtering)
         role_words = [
             "director", "manager", "head", "chief",
             "officer", "coordinator", "administrator",
@@ -133,20 +141,22 @@ def extract_contacts_from_page(base_url: str, url: str, html: str):
                 title_guess = rw
                 break
 
-        # De-duplicate inside this block
-        for e in set(emails):
-            contacts.append({
-                "Email": e.strip(),
-                "Phone": "",
-                "Name_guess": name_guess,
-                "Title_guess": title_guess,
-                "Page_URL": url,
-                "Text_snippet": block[:300]
-            })
+        phones_joined = "; ".join(p.strip() for p in phones) if phones else ""
 
-        for p in set(phones):
-            # Avoid creating pure phone-only rows if we already had an email row
-            if not emails:
+        # If there are emails, create one row per email, with any phones in the same block
+        if emails:
+            for e in emails:
+                contacts.append({
+                    "Email": e.strip(),
+                    "Phone": phones_joined,
+                    "Name_guess": name_guess,
+                    "Title_guess": title_guess,
+                    "Page_URL": url,
+                    "Text_snippet": block[:300]
+                })
+        else:
+            # No emails, but phones present → phone-only contact row(s)
+            for p in phones:
                 contacts.append({
                     "Email": "",
                     "Phone": p.strip(),
@@ -249,7 +259,8 @@ if upload is not None:
     st.dataframe(df.head())
 
     cols = list(df.columns)
-    # Try auto-detect domain column
+
+    # Auto-detect domain column
     def detect_domain_col(cols):
         dom_keywords = ["domain", "website", "url", "site"]
         best = None
@@ -262,6 +273,7 @@ if upload is not None:
                 best = c
         return best
 
+    # Auto-detect company/organisation column
     def detect_company_col(cols):
         org_keywords = [
             "company", "organisation", "organization",
@@ -292,7 +304,10 @@ if upload is not None:
         index=(cols.index(suggested_company_col) + 1) if suggested_company_col in cols else 0
     )
 
-    max_domains = st.number_input("Max domains to process (for safety)", min_value=1, max_value=500, value=50, step=1)
+    max_domains = st.number_input(
+        "Max domains to process (for safety)",
+        min_value=1, max_value=500, value=50, step=1
+    )
 
     if st.button("Run scraper"):
         if domain_col_name is None:
